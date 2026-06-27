@@ -183,12 +183,97 @@ static const char *compute_elixir_func_qn(CBMExtractCtx *ctx, TSNode node) {
     return cbm_fqn_compute(ctx->arena, ctx->project, ctx->rel_path, name);
 }
 
+/* Resolve a CFML tag-function's QN for scope tracking. A <cffunction name="foo">
+ * is a `cf_function_tag`; the name lives in a `cf_attribute` child (name="foo"),
+ * not on a `name` field, so the shared resolver (which has no source pointer to
+ * read the attribute NAME and disambiguate) cannot name it. The def-extractor
+ * extract_cfml_function_tag() does the same attribute walk; this mirrors it so
+ * the in-body call sources to the cffunction Function rather than the Module. */
+static const char *compute_cfml_func_qn(CBMExtractCtx *ctx, TSNode node) {
+    if (strcmp(ts_node_type(node), "cf_function_tag") != 0) {
+        return NULL;
+    }
+    char *name = NULL;
+    uint32_t cc = ts_node_named_child_count(node);
+    for (uint32_t i = 0; i < cc && !name; i++) {
+        TSNode ch = ts_node_named_child(node, i);
+        if (strcmp(ts_node_type(ch), "cf_attribute") != 0) {
+            continue;
+        }
+        TSNode an = cbm_find_child_by_kind(ch, "cf_attribute_name");
+        if (ts_node_is_null(an)) {
+            continue;
+        }
+        char *aname = cbm_node_text(ctx->arena, an, ctx->source);
+        if (!aname || strcasecmp(aname, "name") != 0) {
+            continue;
+        }
+        TSNode val = cbm_find_child_by_kind(ch, "quoted_cf_attribute_value");
+        if (ts_node_is_null(val)) {
+            val = cbm_find_child_by_kind(ch, "cf_attribute_value");
+        }
+        if (ts_node_is_null(val)) {
+            continue;
+        }
+        TSNode inner = cbm_find_child_by_kind(val, "attribute_value");
+        name = cbm_node_text(ctx->arena, ts_node_is_null(inner) ? val : inner, ctx->source);
+    }
+    if (!name || !name[0]) {
+        return NULL;
+    }
+    return cbm_fqn_compute(ctx->arena, ctx->project, ctx->rel_path, name);
+}
+
+/* Resolve a Go-template named-template's QN for scope tracking. A
+ * {{ define "greeting" }} ... {{ end }} is a `define_action` whose name is a
+ * quoted `interpreted_string_literal` child, not a bare identifier on a `name`
+ * field. The shared resolver can't strip the quotes (no source pointer), so the
+ * gate lives here. Mirrors extract_gotemplate_define() so a {{ template }}/include
+ * call inside the define body sources to the define's Function, not the Module. */
+static const char *compute_gotemplate_func_qn(CBMExtractCtx *ctx, TSNode node) {
+    if (strcmp(ts_node_type(node), "define_action") != 0) {
+        return NULL;
+    }
+    TSNode s = cbm_find_child_by_kind(node, "interpreted_string_literal");
+    if (ts_node_is_null(s)) {
+        return NULL;
+    }
+    char *raw = cbm_node_text(ctx->arena, s, ctx->source);
+    if (!raw) {
+        return NULL;
+    }
+    size_t len = strlen(raw);
+    if (len >= 2 && (raw[0] == '"' || raw[0] == '`')) {
+        raw = cbm_arena_strndup(ctx->arena, raw + 1, len - 2); // strip surrounding quotes
+    }
+    if (!raw || !raw[0]) {
+        return NULL;
+    }
+    return cbm_fqn_compute(ctx->arena, ctx->project, ctx->rel_path, raw);
+}
+
 // Compute function QN for scope tracking (mirrors cbm_enclosing_func_qn logic).
 static const char *compute_func_qn(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec,
                                    WalkState *state) {
     (void)spec;
     if (ctx->language == CBM_LANG_WOLFRAM) {
         return compute_wolfram_func_qn(ctx, node);
+    }
+
+    /* CFML tag dialect: <cffunction name="foo"> is a cf_function_tag whose name
+     * lives in a cf_attribute, not a `name` field — gate here where ctx->source
+     * is available to read the attribute. Other CFML func nodes (embedded
+     * CFScript function_declaration/_expression) fall through to the shared
+     * resolver below. */
+    if (ctx->language == CBM_LANG_CFML &&
+        strcmp(ts_node_type(node), "cf_function_tag") == 0) {
+        return compute_cfml_func_qn(ctx, node);
+    }
+
+    /* Go templates: {{ define "x" }} is a define_action whose name is a quoted
+     * string literal — strip the quotes here (the shared resolver has no source). */
+    if (ctx->language == CBM_LANG_GOTEMPLATE) {
+        return compute_gotemplate_func_qn(ctx, node);
     }
 
     /* Lisp family (Clojure/Scheme/Racket): the def node is a list/list_lit, a

@@ -275,10 +275,14 @@ static const char *cfscript_import_types[] = {"import_statement", "import", NULL
 
 // ==================== CFML (tag dialect — .cfm templates) ====================
 // Tag-based grammar (HTML-derived). Embedded <cfscript> functions appear as
-// function_declaration/function_expression; tag <cffunction> nodes
-// (cf_function_tag) are handled separately in the definition walker because
-// their name lives in a cf_attribute rather than a `name` field.
-static const char *cfml_func_types[] = {"function_declaration", "function_expression", NULL};
+// function_declaration/function_expression. Tag <cffunction> nodes
+// (cf_function_tag) carry their name in a cf_attribute rather than a `name`
+// field, so the definition walker mints them via extract_cfml_function_tag and
+// compute_func_qn names them via compute_cfml_func_qn — but cf_function_tag is
+// listed here too so push_boundary_scopes pushes a SCOPE_FUNC and in-body calls
+// source to the enclosing cffunction rather than the Module.
+static const char *cfml_func_types[] = {"cf_function_tag", "function_declaration",
+                                        "function_expression", NULL};
 static const char *cfml_call_types[] = {"call_expression", NULL};
 static const char *cfml_branch_types[] = {
     "cf_if_tag",     "cf_elseif_tag",   "cf_else_tag",      "if_statement",
@@ -1268,6 +1272,7 @@ static const char *just_import_types[] = {"import", NULL};
 static const char *just_branch_types[] = {"if_expression", NULL};
 static const char *just_assign_types[] = {"assignment", NULL};
 static const char *just_module_types[] = {"source_file", NULL};
+static const char *gotemplate_func_types[] = {"define_action", NULL};
 static const char *gotemplate_call_types[] = {"function_call", "method_call", "template_action",
                                               NULL};
 static const char *gotemplate_module_types[] = {"template", NULL};
@@ -2200,7 +2205,7 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
                        tree_sitter_just, NULL},
 
     // CBM_LANG_GOTEMPLATE
-    [CBM_LANG_GOTEMPLATE] = {CBM_LANG_GOTEMPLATE, empty_types, empty_types, empty_types,
+    [CBM_LANG_GOTEMPLATE] = {CBM_LANG_GOTEMPLATE, gotemplate_func_types, empty_types, empty_types,
                              gotemplate_module_types, gotemplate_call_types, empty_types,
                              empty_types, empty_types, empty_types, empty_types, empty_types, NULL,
                              empty_types, NULL, NULL, tree_sitter_gotmpl, NULL},

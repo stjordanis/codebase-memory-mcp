@@ -5634,12 +5634,33 @@ static void walk_defs(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec, 
 
         if (ctx->language == CBM_LANG_CFML && strcmp(kind, "cf_function_tag") == 0) {
             extract_cfml_function_tag(ctx, node);
-            // fall through: descend into the body for nested tags / calls
+            // cf_function_tag is in cfml_func_types (for call-scope attribution),
+            // but its name lives in a cf_attribute, not a `name` field — so the
+            // generic extract_func_def below must NOT also run on it (it would
+            // resolve a null name and, for grammars where the kind has a `name`
+            // field, double-mint). Push children so nested tags/defs are still
+            // traversed, then skip the generic func path.
+            uint32_t cc = ts_node_child_count(node);
+            for (int i = (int)cc - SKIP_CHAR; i >= 0 && top < CBM_WALK_DEFS_STACK_CAP; i--) {
+                stack[top++] =
+                    (walk_defs_frame_t){ts_node_child(node, (uint32_t)i), frame.enclosing_class_qn};
+            }
+            continue;
         }
 
         if (ctx->language == CBM_LANG_GOTEMPLATE && strcmp(kind, "define_action") == 0) {
             extract_gotemplate_define(ctx, node);
-            // fall through: descend into the body for nested defines
+            // define_action is in gotemplate_func_types (for call-scope
+            // attribution), but its `name` field is a quoted string literal — the
+            // generic extract_func_def below would double-mint a def whose name
+            // still carries the quotes. Push children so nested defines are still
+            // traversed, then skip the generic func path.
+            uint32_t cc = ts_node_child_count(node);
+            for (int i = (int)cc - SKIP_CHAR; i >= 0 && top < CBM_WALK_DEFS_STACK_CAP; i--) {
+                stack[top++] =
+                    (walk_defs_frame_t){ts_node_child(node, (uint32_t)i), frame.enclosing_class_qn};
+            }
+            continue;
         }
 
         if ((ctx->language == CBM_LANG_CLOJURE || ctx->language == CBM_LANG_RACKET ||
